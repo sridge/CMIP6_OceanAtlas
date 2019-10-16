@@ -1,0 +1,9 @@
+Exclusions:
+
+Not following expocode format:
+    719	CARBOGIB2005
+    720	IcelandSea
+    721	IrmingerSea
+    722	OMEX1NS
+    723	OMEX2
+    724	ZZIC2005SWYD
