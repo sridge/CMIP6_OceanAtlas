@@ -1,6 +1,10 @@
 # CMIP6 Ocean Atlas
 
 ## Quick Start
+1. Download GLODAPv2.2019
+```wget https://www.nodc.noaa.gov/archive/arc0133/0186803/2.2/data/0-data/GLODAPv2.2019_Merged_Master_File.csv```
+2. Run the filter_glodap_sections.ipynb
+3. Run qc_lines.ipynb
 
 Check ```/interp_examples/``` for example notebooks
 
