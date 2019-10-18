@@ -11,7 +11,7 @@ import dateutil
 import intake
 import dask
 
-def generate_model_sections(ovar_name=None, model=None)
+def generate_model_sections(ovar_name=None, model=None):
     '''
     generate_model_section(ovar_name, model)
     

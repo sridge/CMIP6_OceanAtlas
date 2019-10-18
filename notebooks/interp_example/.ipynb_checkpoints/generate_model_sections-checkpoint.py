@@ -11,8 +11,19 @@ import dateutil
 import intake
 import dask
 
-def generate_model_sections(ovar_name,model)
-
+def generate_model_sections(ovar_name=None, model=None)
+    '''
+    generate_model_section(ovar_name, model)
+    
+    Input
+    ==========
+    ovar_name : variable name (eg 'dissic')
+    model : model name (eg CanESM5)
+    
+    Output
+    ===========
+    ds : dataset of section output
+    '''
     institue = {'CanESM5':'CCCma',
                 'CNRM-ESM2-1':'CNRM-CERFACS',
                 'IPSL-CM6A-LR':'IPSL',
@@ -21,145 +32,80 @@ def generate_model_sections(ovar_name,model)
                 'GISS-E2-1-G-CC':'NASA-GISS',
                 'GISS-E2-1-G':'NASA-GISS'
                }
-    coord_dict = {'olevel':'lev'} # a dictionary for converting coordinate names
 
-
-    # In[8]:
-
-
+    # Get CMIP6 output from intake_esm
     col = intake.open_esm_datastore("../../catalogs/pangeo-cmip6.json")
-
-
-    # In[9]:
-
-
     cat = col.search(experiment_id='historical', table_id='Omon', 
                      variable_id='dissic', grid_label='gn')
 
-
-    # In[10]:
-
-
+    # dictionary of subset data
     dset_dict = cat.to_dataset_dict(zarr_kwargs={'consolidated': True}, 
                                     cdf_kwargs={'chunks': {}})
 
-
-    # In[11]:
-
-
+    # Put data into dataset
     ds = dset_dict[f'CMIP.{institue[model]}.{model}.historical.Omon.gn']
 
-
-    # In[12]:
-
-
+    
+    # Rename olevel to lev 
+    coord_dict = {'olevel':'lev'} # a dictionary for converting coordinate names
     if 'olevel' in ds.dims:
         ds = ds.rename(coord_dict)
     if lat in ds.dims
 
-
-    # In[13]:
-
-
-    ds[ovar_name].isel(member_id=0,time=0,lev=0).plot()
+    # plots data
+    #ds[ovar_name].isel(member_id=0, time=0, lev=0).plot()
 
 
-    # In[14]:
-
-
-    # load station information from csv file
+    # load GLODAP station information from csv file
+    # drop nans, reset index, and drop uneeded variable
     df = pd.read_csv('../../qc/GLODAPv2.2019_COORDS.csv')
-
-
-    # In[15]:
-
-
     df = df.dropna()
-    df = df.reset_index().drop('Unnamed: 0',axis=1)
+    df = df.reset_index().drop('Unnamed: 0', axis=1)
 
-
-    # In[16]:
-
-
+    # Genearte times list and put into dataframe
     times = [f'{int(year)}-{int(month):02d}' for year,month in zip(df.year,df.month)]
-
-
-    # In[17]:
-
-
     df['dates'] = times 
 
-
-    # In[18]:
-
-
+    # Find unique dates, these are the sample dates
     sample_dates = df['dates'].sort_values().unique()
-
-
-    # In[19]:
-
-
-    # only looking at dates in the historical period now
+    
+    # Parse the historical period
     sample_dates = sample_dates[0:125]
-
-
-    # In[21]:
-
-
     sample_dates = [dateutil.parser.parse(date) - pd.Timedelta('16 day') for date in sample_dates]
-
-
-    # In[23]:
-
 
     # shift dates to middle of the month
     ds['time'] = pd.date_range(start=f'{ds.time.dt.year[0].values}-{ds.time.dt.month[0].values:02}',
                             end=f'{ds.time.dt.year[-1].values}-{ds.time.dt.month[-1].values:02}',
                             freq='MS')
 
-
-    # In[26]:
-
-
+    # ==========================================
+    # Here we start making the ovar dataset
+    # ==========================================
+    # Trim the dates to sample_dates
     ovar = ds[ovar_name].sel(time=sample_dates)
     ovar['lat'] = ds.latitude
     ovar['lon'] = ds.longitude
-
-
-    # In[27]:
-
 
     # create source grid and target section objects
     # this requires lon,lat from stations and the source grid dataset containing lon,lat
     proj = lib_easy_coloc.projection(df['longitude'].values,df['latitude'].values,grid=ovar,
                                      from_global=True)
 
-
-    # In[30]:
-
-
-    ovar = ovar.squeeze() #4-D max for easy_coloc
-
-
-    # In[32]:
-
+    # 4-D max for easy_coloc. Not entirely sure what we are squeezing out?
+    ovar = ovar.squeeze() 
 
     # run the projection on the WOA analyzed temperature (t_an)
     fld = np.zeros((len(sample_dates),len(ovar.lev),len(df)))
 
-    for ind in range(5,130,5):
+    # 
+    for ind in range(5, 130, 5):
         dates = sample_dates[ind-5:ind]
         fld_tem = proj.run(ovar.sel(time=dates)[:])
         fld[ind-5:ind,:,:] = fld_tem
 
-
-    # In[35]:
-
-
+    # create datarray with sampling information
     sampled_var = xr.DataArray(fld,
-
                                dims=['time','lev','all_stations'],
-
                                coords={'time':ovar['time'],
                                        'lev':ovar['lev'],
                                        'all_stations':df.index.values,
@@ -168,24 +114,17 @@ def generate_model_sections(ovar_name,model)
                                        'lat':('all_stations',df.latitude.values),
                                        'lon':('all_stations',df.longitude.values),
                                       },
-
                                attrs={'units':ovar.units,
                                       'long_name':ovar.long_name
                                      }
                               )
 
-
-    # In[36]:
-
-
+    # Glodap expo codes
     expc = pd.read_csv('../../qc/FILTERED_GLODAP_EXPOCODE.csv')
 
-
-    # In[37]:
-
-
+    #
     for cruise_id in df[df.year<2015].groupby('cruise').mean().reset_index().cruise:
-
+        
         print(expc[expc.ID == cruise_id].EXPOCODE.values[0])
 
         cruise_x = df[df.cruise==cruise_id]
@@ -201,11 +140,9 @@ def generate_model_sections(ovar_name,model)
         section.name = ovar.name
         section.to_netcdf(f'../../../sections/{ovar.name}_{model}_{realization}_{section.expocode}.nc')
 
-
-    # In[39]:
-
-
+    # convert datarray to dataset
     ds = sampled_var.to_dataset(name=ovar.name)
-    ds.to_netcdf(f'../../../sections/{ovar.name}_{model}_{realization}.nc')
+    #ds.to_netcdf(f'../../../sections/{ovar.name}_{model}_{realization}.nc')
 
+    return ds
 

@@ -1,3 +1,5 @@
+# not all fo these importa may be necessary?
+
 from easy_coloc import lib_easy_coloc
 import xarray as xr
 import pandas as pd
@@ -11,7 +13,10 @@ import dateutil
 import intake
 import dask
 
-def generate_model_sections(ovar_name=None, model=None)
+def model_to_glodap(ovar_name=None, 
+                            model=None, 
+                            catalog_path='../catalogs/pangeo-cmip6.json',
+                            qc_path='../qc'):
     '''
     generate_model_section(ovar_name, model)
     
@@ -34,9 +39,11 @@ def generate_model_sections(ovar_name=None, model=None)
                }
 
     # Get CMIP6 output from intake_esm
-    col = intake.open_esm_datastore("../../catalogs/pangeo-cmip6.json")
-    cat = col.search(experiment_id='historical', table_id='Omon', 
-                     variable_id='dissic', grid_label='gn')
+    col = intake.open_esm_datastore(catalog_path)
+    cat = col.search(experiment_id='historical', 
+                     table_id='Omon', 
+                     variable_id=ovar_name, 
+                     grid_label='gn')
 
     # dictionary of subset data
     dset_dict = cat.to_dataset_dict(zarr_kwargs={'consolidated': True}, 
@@ -50,15 +57,10 @@ def generate_model_sections(ovar_name=None, model=None)
     coord_dict = {'olevel':'lev'} # a dictionary for converting coordinate names
     if 'olevel' in ds.dims:
         ds = ds.rename(coord_dict)
-    if lat in ds.dims
-
-    # plots data
-    #ds[ovar_name].isel(member_id=0, time=0, lev=0).plot()
-
 
     # load GLODAP station information from csv file
     # drop nans, reset index, and drop uneeded variable
-    df = pd.read_csv('../../qc/GLODAPv2.2019_COORDS.csv')
+    df = pd.read_csv(f'{qc_path}/GLODAPv2.2019_COORDS.csv')
     df = df.dropna()
     df = df.reset_index().drop('Unnamed: 0', axis=1)
 
@@ -120,29 +122,10 @@ def generate_model_sections(ovar_name=None, model=None)
                               )
 
     # Glodap expo codes
-    expc = pd.read_csv('../../qc/FILTERED_GLODAP_EXPOCODE.csv')
-
-    #
-    for cruise_id in df[df.year<2015].groupby('cruise').mean().reset_index().cruise:
-        
-        print(expc[expc.ID == cruise_id].EXPOCODE.values[0])
-
-        cruise_x = df[df.cruise==cruise_id]
-
-        section_dates = [dateutil.parser.parse(date) - pd.Timedelta('16 day') for date in cruise_x.dates]
-        section_dates = xr.DataArray(section_dates,dims='station')
-
-        stations = cruise_x.index
-        stations = xr.DataArray(stations,dims='station')
-
-        section = sampled_var.sel(all_stations = stations, time=section_dates)
-        section.attrs['expocode'] = expc[expc.ID == cruise_id].EXPOCODE.values[0]
-        section.name = ovar.name
-        section.to_netcdf(f'../../../sections/{ovar.name}_{model}_{realization}_{section.expocode}.nc')
+    expc = pd.read_csv(f'{qc_path}/FILTERED_GLODAP_EXPOCODE.csv')
 
     # convert datarray to dataset
+    # This grabs everything
     ds = sampled_var.to_dataset(name=ovar.name)
-    #ds.to_netcdf(f'../../../sections/{ovar.name}_{model}_{realization}.nc')
 
     return ds
-
