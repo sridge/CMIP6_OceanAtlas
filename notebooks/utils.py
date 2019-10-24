@@ -13,9 +13,210 @@ import dask
 
 #==============================================================
 #
-# model to line
+# model to glodap
 #
 #==============================================================
+
+def make_rename_map(ds,model,coord_rename_map = {}):
+    
+    coord_rename_map[model] = {}
+    
+    if ('latitude' in ds.coords):
+        coord_rename_map[model]['latitude'] = 'latitude'
+    elif ('lat' in ds.coords) and ('latitude' not in ds.data_vars):
+        coord_rename_map[model]['lat'] = 'latitude'
+    elif ('lat' not in ds.coords) and ('latitude' not in ds.coords):
+        if 'latitude' in ds.data_vars:
+            coord_rename_map[model]['latitude'] = 'latitude'
+        elif 'lat' in ds.data_vars:
+            coord_rename_map[model]['lat'] = 'latitude'
+        elif 'nav_lat' in ds.data_vars:
+            coord_rename_map[model]['nav_lat'] = 'latitude'
+#         elif 'lat_bnds' in ds.data_vars:
+#             coord_rename_map[model]['lat_bnds'] = 'latitude'
+
+    if ('longitude' in ds.coords):
+        coord_rename_map[model]['longitude'] = 'longitude'
+    elif ('lon' in ds.coords) and ('longitude' not in ds.data_vars):
+        coord_rename_map[model]['lon'] = 'longitude'
+    elif ('lon' not in ds.coords) and ('longitude' not in ds.coords):
+        if 'longitude' in ds.data_vars:
+            coord_rename_map[model]['longitude'] = 'longitude'
+        elif 'lon' in ds.data_vars:
+            coord_rename_map[model]['lon'] = 'longitude'
+        elif 'nav_lon' in ds.data_vars:
+            coord_rename_map[model]['nav_lon'] = 'longitude'
+#         elif 'lon_bnds' in ds.data_vars:
+#             coord_rename_map[model]['lon_bnds'] = 'longitude'
+    
+    if ('lev' in ds.coords):
+        coord_rename_map[model]['lev'] = 'lev'
+    elif ('lev' not in ds.coords):
+        if 'olevel' in ds.coords:
+            coord_rename_map[model]['olevel'] = 'lev'
+        elif 'depth' in ds.coords:
+            coord_rename_map[model]['depth'] = 'lev'
+        elif 'rho' in ds.coords:
+            coord_rename_map[model]['rho'] = 'lev'
+    
+    return coord_rename_map
+
+def model_to_glodap(ovar_name=None,
+                model=None,
+                catalog_path='../catalogs/pangeo-cmip6.json',
+                qc_path='../qc',
+                output_path='../../sections/'):
+    '''
+    generate_model_section(ovar_name, model)
+
+    ** THIS IS SLOW **
+
+    Input
+    ==========
+    ovar_name : variable name (eg 'dissic')
+    model : model name (eg CanESM5)
+
+    Output
+    ===========
+    ds : dataset of section output
+
+    Example
+    ============
+    '''
+
+    # Get CMIP6 output from intake_esm
+    col = intake.open_esm_datastore(catalog_path)
+    cat = col.search(experiment_id='historical',
+                     table_id='Omon',
+                     source_id=model,
+                     variable_id=ovar_name,
+                     grid_label='gn')
+
+    # dictionary of subset data
+    dset_dict = cat.to_dataset_dict(zarr_kwargs={'consolidated': True},
+                                    cdf_kwargs={'chunks': {}})
+
+    model_institute_df = cat.df.drop_duplicates(subset='source_id')[['source_id','institution_id']]
+    
+    institute = model_institute_df.institution_id[model_institute_df.source_id==model].values[0]
+    
+    # Put data into dataset
+    ds = dset_dict[f'CMIP.{institute}.{model}.historical.Omon.gn']
+    
+    # CMIP6 files were submitted with inconsistent coordinate names
+    # make coordinate names consistent by renaming
+    coord_rename_map = make_rename_map(ds,model)
+    ds = ds.rename(coord_rename_map[model])
+
+#     coord_dict = {'olevel':'lev'} # a dictionary for converting coordinate names
+#     if 'olevel' in ds.dims:
+#         ds = ds.rename(coord_dict)
+
+    # load GLODAP station information from csv file
+    # drop nans, reset index, and drop uneeded variable
+    df = pd.read_csv(f'{qc_path}/GLODAPv2.2019_COORDS.csv')
+    df = df.dropna()
+    df = df.reset_index().drop('Unnamed: 0', axis=1)
+
+    # Generate list of dates from the separate year and month columns and put into dataframe
+    dates = [f'{int(year)}-{int(month):02d}-01' for year,month in zip(df.year,df.month)]
+    df['dates'] = dates
+
+    # Find unique dates, these are the sample dates
+    sample_dates = df['dates'].sort_values().unique()
+
+    # Parse the historical period
+    sample_dates = sample_dates[0:125]
+    sample_dates = [dateutil.parser.parse(date) for date in sample_dates]
+
+    # shift dates to middle of the month
+    ds['time'] = pd.date_range(start=f'{ds.time.dt.year[0].values}-{ds.time.dt.month[0].values:02}',
+                               end=f'{ds.time.dt.year[-1].values}-{ds.time.dt.month[-1].values:02}',
+                               freq='MS')
+
+    # ==========================================
+    # Here we start making the ovar dataset
+    # ==========================================
+    # Trim the dates to sample_dates
+    ovar = ds[ovar_name].sel(time=sample_dates)
+      
+    ovar['lat'] = ds.latitude
+    ovar['lon'] = ds.longitude 
+
+    # create source grid and target section objects
+    # this requires lon,lat from stations and the source grid dataset containing lon,lat
+    proj = lib_easy_coloc.projection(df['longitude'].values,df['latitude'].values,grid=ovar,
+                                     from_global=True)
+    
+    realizations = cat.df[cat.df['source_id']==model].member_id.values
+
+    if len(realizations) < 2:
+        
+        fld = np.zeros((len(sample_dates),len(ovar.lev),len(df)))
+
+        ovar = ovar.squeeze()
+        
+        for ind in range(5, 130, 5):
+            dates = sample_dates[ind-5:ind]
+            fld_tem = proj.run(ovar.sel(time=dates)[:])
+            fld[ind-5:ind,:,:] = fld_tem
+
+        # create datarray with sampling information
+        sampled_var = xr.DataArray(fld,
+                                   dims=['time','lev','all_stations'],
+                                   coords={'time':ovar['time'],
+                                           'lev':ovar['lev'],
+                                           'all_stations':df.index.values,
+                                           'dx':('all_stations',df.dx.values),
+                                           'bearing':('all_stations',df.bearing.values),
+                                           'lat':('all_stations',df.latitude.values),
+                                           'lon':('all_stations',df.longitude.values),
+                                          },
+                                   attrs={'units':ovar.units,
+                                          'long_name':ovar.long_name
+                                         }
+                                  )
+
+        ds = sampled_var.to_dataset(name=ovar.name)
+        ds.to_netcdf(f'{output_path}/{ovar.name}_{model}_{realizations[0]}.nc')
+        
+    if len(realizations) > 2:
+        
+        fld = np.zeros((len(sample_dates),len(ovar.lev),len(df)))
+
+        ovar = ovar[0,].squeeze()
+        
+        for ind in range(5, 130, 5):
+            dates = sample_dates[ind-5:ind]
+            fld_tem = proj.run(ovar.sel(time=dates)[:])
+            fld[ind-5:ind,:,:] = fld_tem
+
+        # create datarray with sampling information
+        sampled_var = xr.DataArray(fld,
+                                   dims=['time','lev','all_stations'],
+                                   coords={'time':ovar['time'],
+                                           'lev':ovar['lev'],
+                                           'all_stations':df.index.values,
+                                           'dx':('all_stations',df.dx.values),
+                                           'bearing':('all_stations',df.bearing.values),
+                                           'lat':('all_stations',df.latitude.values),
+                                           'lon':('all_stations',df.longitude.values),
+                                          },
+                                   attrs={'units':ovar.units,
+                                          'long_name':ovar.long_name
+                                         }
+                                  )
+
+        ds = sampled_var.to_dataset(name=ovar.name)
+        ds.to_netcdf(f'{output_path}/{ovar.name}_{model}_{realizations[0]}.nc')
+        
+#==============================================================
+#
+# model to glodap
+#
+#==============================================================
+
+
 def model_to_line(ovar_name=None,
                 model=None,
                 cruise_line=None,
@@ -114,7 +315,7 @@ def regridder(model,obs,ovar_name):
 
 
 
-def glodap_to_model(cruise_id,glodap,coords,expc,ovar_name,model,output_path='../../../sections'):
+def glodap_to_model(cruise_id,glodap,coords,expc,ovar_name,model,output_path='../../sections'):
     
     model2glodap_ovar_name = {'thetao':'theta',
                           'so':'salinity',
