@@ -6,7 +6,7 @@
 2. Run the filter_glodap_sections.ipynb
 3. Run qc_lines.ipynb
 
-Check ```/notebooks/example_notebook.pynb``` for example. 
+Check ```/notebooks/example_notebook.pynb``` for section example. 
 
 ## Summary
 This repository contains the data processing notebooks for a web based ocean atlas (similar to the WOCE Atlas, shown above) of CMIP6 models sampled as WOCE/GO-SHIP cruises. 
