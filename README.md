@@ -20,5 +20,5 @@ Ultimately these will be included in a website where one will be able select an 
 With this atlas we can make the CMIP6 data more accessible to observationalists, and modelers will spend much less time creating comparisons of simulated tracer fields and observed tracer fields from WOCE/GO-SHIP cruises.
 
 # Included Sections 
-!['sections'](https://github.com/sridge/CMIP6_OceanAtlas/blob/master/qc_images/sections_qc.png "Sections")
+!['sections'](https://github.com/sridge/CMIP6_OceanAtlas/blob/master/notebooks/sections_qc.png "Sections")
 
