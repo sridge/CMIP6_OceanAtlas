@@ -3,11 +3,10 @@
 ## Quick Start
 1. Download GLODAPv2.2019:\
 ```wget https://www.nodc.noaa.gov/archive/arc0133/0186803/2.2/data/0-data/GLODAPv2.2019_Merged_Master_File.csv```
-2. Run ```qc/filter_glodap_sections.ipynb```
-3. Run ```qc/qc_lines.ipynb```
-4. Open ```notebooks/
+2. Run the filter_glodap_sections.ipynb
+3. Run qc_lines.ipynb
 
-Check ```notebooks/example_notebook.pynb``` for section example. 
+Check ```/notebooks/example_notebook.pynb``` for section example. 
 
 ## Summary
 This repository contains the data processing notebooks for a web based ocean atlas (similar to the WOCE Atlas, shown above) of CMIP6 models sampled as WOCE/GO-SHIP cruises. 

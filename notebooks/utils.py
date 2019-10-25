@@ -19,6 +19,27 @@ import dask
 
 def make_rename_map(ds,model,coord_rename_map = {}):
     
+    """Creates a dictionary for coordinate renaming.
+
+    CMIP6 models have inconsistent names. This function creates 
+    dictionary to rename the coordinates of a single model so 
+    that they are consistent (ex: lat --> latitude).
+
+    Args:
+        ds: xarray dataset with coordinates.
+        model: name of CMIP6 model
+        coord_rename_map: dict that you would like to append a 
+        single model entry to.
+
+    Returns:
+        A dict mapping original coordnames to standard names.
+        Currently only renames lev and latitude/longitude.
+        Keys are original name, values are the new name
+
+        {CESM1: {'lat': 'latitude',depth':'lev'}}
+
+    """
+    
     coord_rename_map[model] = {}
     
     if ('latitude' in ds.coords):
@@ -66,23 +87,31 @@ def model_to_glodap(ovar_name=None,
                 catalog_path='../catalogs/pangeo-cmip6.json',
                 qc_path='../qc',
                 output_path='../../sections/'):
-    '''
-    generate_model_section(ovar_name, model)
+    
+    """Interpolates model to GLODAP points.
 
-    ** THIS IS SLOW **
+    This function samples the model as GLODAP and writes the
+    resampled data to disk. Runtime of about <5 minutes per 
+    model.
+    
+    Temporal sampling is done as though every cruise was conduct-
+    ed at the same time. Temporal sampling is adjusted to match 
+    cruises with model_to_section, among other things.
+    
+    This function must be run before model_to_section, but only
+    needs to be run once
 
-    Input
-    ==========
-    ovar_name : variable name (eg 'dissic')
-    model : model name (eg CanESM5)
+    Args:
+        ovar_name: ocean variable name
+        model: name of CMIP6 model
+        catalog_path: path to catalog used by intake-esm
+        qc_path: location of qc'd model sections
+        output_path: where the output is written
 
-    Output
-    ===========
-    ds : dataset of section output
-
-    Example
-    ============
-    '''
+    Returns:
+        xarray Dataset
+        
+    """
 
     # Get CMIP6 output from intake_esm
     col = intake.open_esm_datastore(catalog_path)
@@ -92,25 +121,22 @@ def model_to_glodap(ovar_name=None,
                      variable_id=ovar_name,
                      grid_label='gn')
 
-    # dictionary of subset data
+    # dictionary of xarray datasets
     dset_dict = cat.to_dataset_dict(zarr_kwargs={'consolidated': True},
                                     cdf_kwargs={'chunks': {}})
 
-    model_institute_df = cat.df.drop_duplicates(subset='source_id')[['source_id','institution_id']]
     
+    # we need to know the intitute that ran the model to get the correct xarray dataset
+    model_institute_df = cat.df.drop_duplicates(subset='source_id')[['source_id','institution_id']]
     institute = model_institute_df.institution_id[model_institute_df.source_id==model].values[0]
     
-    # Put data into dataset
+    # get the xarray dataset for the corresponding model
     ds = dset_dict[f'CMIP.{institute}.{model}.historical.Omon.gn']
     
     # CMIP6 files were submitted with inconsistent coordinate names
     # make coordinate names consistent by renaming
     coord_rename_map = make_rename_map(ds,model)
     ds = ds.rename(coord_rename_map[model])
-
-#     coord_dict = {'olevel':'lev'} # a dictionary for converting coordinate names
-#     if 'olevel' in ds.dims:
-#         ds = ds.rename(coord_dict)
 
     # load GLODAP station information from csv file
     # drop nans, reset index, and drop uneeded variable
@@ -125,11 +151,12 @@ def model_to_glodap(ovar_name=None,
     # Find unique dates, these are the sample dates
     sample_dates = df['dates'].sort_values().unique()
 
-    # Parse the historical period
+    # Look only at the historical period
+    # convert to datetime
     sample_dates = sample_dates[0:125]
     sample_dates = [dateutil.parser.parse(date) for date in sample_dates]
 
-    # shift dates to middle of the month
+    # homogenize model dates to first of the month
     ds['time'] = pd.date_range(start=f'{ds.time.dt.year[0].values}-{ds.time.dt.month[0].values:02}',
                                end=f'{ds.time.dt.year[-1].values}-{ds.time.dt.month[-1].values:02}',
                                freq='MS')
@@ -137,19 +164,23 @@ def model_to_glodap(ovar_name=None,
     # ==========================================
     # Here we start making the ovar dataset
     # ==========================================
-    # Trim the dates to sample_dates
+    
+    # Trim model dates to sample_dates
     ovar = ds[ovar_name].sel(time=sample_dates)
       
-    ovar['lat'] = ds.latitude
-    ovar['lon'] = ds.longitude 
+    ovar['latitude'] = ds.latitude
+    ovar['longitude'] = ds.longitude 
 
     # create source grid and target section objects
-    # this requires lon,lat from stations and the source grid dataset containing lon,lat
-    proj = lib_easy_coloc.projection(df['longitude'].values,df['latitude'].values,grid=ovar,
+    # this requires lon,lat from stations and the source grid dataset containing 'longitude','latitude'
+    proj = lib_easy_coloc.projection(df['longitude'].values,df['latitude'].values,grid=ovar,coord_names=['longitude', 'latitude'],
                                      from_global=True)
     
+    # get the realization (ex: r10i1p1f1)
     realizations = cat.df[cat.df['source_id']==model].member_id.values
-
+    
+    # len(realizations) gives the number of ensemble members
+    # if block for models with only one ensemble member in the database
     if len(realizations) < 2:
         
         fld = np.zeros((len(sample_dates),len(ovar.lev),len(df)))
@@ -180,6 +211,7 @@ def model_to_glodap(ovar_name=None,
         ds = sampled_var.to_dataset(name=ovar.name)
         ds.to_netcdf(f'{output_path}/{ovar.name}_{model}_{realizations[0]}.nc')
         
+    # right now, if there are multiple ensemble members, we only sample one
     if len(realizations) > 2:
         
         fld = np.zeros((len(sample_dates),len(ovar.lev),len(df)))
@@ -212,7 +244,7 @@ def model_to_glodap(ovar_name=None,
         
 #==============================================================
 #
-# model to glodap
+# model to line
 #
 #==============================================================
 
@@ -220,29 +252,33 @@ def model_to_glodap(ovar_name=None,
 def model_to_line(ovar_name=None,
                 model=None,
                 cruise_line=None,
+                write = False,
                 catalog_path='../catalogs/pangeo-cmip6.json',
                 qc_path='../qc',
                 output_path='../../sections'):
-    '''
-    generate_model_section(ovar_name, model)
+    
+    """Interpolates model to a cruise.
 
-    ** THIS IS SLOW **
+    This function reads in output from model_to_glodap and pulls 
+    out a single cruise. The model will be sampled at the same 
+    time and lat/lon as the original cruise
+    
+    model_to_glodap must be run first, but only needs to be run 
+    once (not ever time you call model_to_section)
 
-    Input
-    ==========
-    ovar_name : variable name (eg 'dissic')
-    model : model name (eg CanESM5)
+    Args:
+        ovar_name: ocean variable name
+        model: name of CMIP6 model
+        cruise_line: name of WOCE/GO-SHIP section
+        write: would you like to save section to disk?
+        catalog_path: path to catalog used by intake-esm
+        qc_path: location of qc'd model sections
+        output_path: where the output is written
 
-    Output
-    ===========
-    ds : dataset of section output
-
-    Example
-    ============
-    ds = model_to_line(ovar_name='dissic',
-                   model='CanESM5',
-                   cruise_line='A16')
-    '''
+    Returns:
+        section: xarray Dataset, model sampled as cruise
+        
+    """
     
     sampled_var = xr.open_mfdataset(f'{output_path}/{ovar_name}_{model}_r*f?.nc')
 
@@ -274,7 +310,8 @@ def model_to_line(ovar_name=None,
     section = sampled_var.sel(all_stations = stations, time=section_dates)
     section.attrs['expocode'] = expc['EXPOCODE'][expc.LINE.str.contains(cruise_line)].values[0]
     
-    section.to_netcdf(f'{output_path}/{ovar_name}_{model}_tem_{section.expocode}.nc')
+    if write:
+        section.to_netcdf(f'{output_path}/{ovar_name}_{model}_tem_{section.expocode}.nc')
 
     return section
 #==============================================================
@@ -285,9 +322,27 @@ def model_to_line(ovar_name=None,
 
 import scipy.interpolate as scint
 
-def regridder(model,obs,ovar_name):
+def gridder(model,obs,ovar_name):
+    
+    """Interpolates bottle data (GLODAP) to model vertical grid.
 
-    bgc_ovar_names = ['dissic','no3','po4','talk']
+    Aggregate observations into grid cells so that you can do 
+    pointwise statistics (ex: difference the two fields, model
+    -obs).
+
+    Args:
+        model: model data (output from model_to_section)
+        obs: subset of GLODAP
+        ovar_name: ocean variable name
+        write: would you like to save section to disk?
+        catalog_path: path to catalog used by intake-esm
+        qc_path: location of qc'd model sections
+        output_path: where the output is written
+
+    Returns:
+        interpolated_obs: xarray Dataset
+        
+    """
 
     # z distance is much less than distance between stations
     scale_factor = model.dx.mean().values*1e3
@@ -315,8 +370,36 @@ def regridder(model,obs,ovar_name):
 
 
 
-def glodap_to_model(cruise_id,glodap,coords,expc,ovar_name,model,output_path='../../sections'):
+def glodap_to_model(cruise_id,
+                    glodap,
+                    coords,
+                    expc,
+                    ovar_name,
+                    model,
+                    write = False,
+                    output_path='../../sections'):
     
+    """Give a cruise_id and expocode and get bottle data gridded
+    to model levels.
+
+    Aggregate observations into grid cells so that you can do 
+    pointwise statistics (ex: difference the two fields, model
+    -obs).
+
+    Args:
+        model: str, model name
+        glodap: pandas DataFrame, GLODAP dataset, -9999 replaced with NaNs
+        coords: pandas DataFrame, quality controlled coordinates of sections 
+        ovar_name: str, ocean variable name
+        write: would you like to save section to disk?
+        output_path: where the output is written
+
+    Returns:
+        interpolated_obs: xarray Dataset
+        
+    """
+    
+    # translate CMIP6 convention to GLODAP naming convention
     model2glodap_ovar_name = {'thetao':'theta',
                           'so':'salinity',
                           'cfc11':'cfc11',
@@ -347,9 +430,10 @@ def glodap_to_model(cruise_id,glodap,coords,expc,ovar_name,model,output_path='..
         obs = section_obs[['station','depth',model2glodap_ovar_name[ovar_name]]].dropna()
         model_output = section_model
 
-        interpolated_obs = regridder(model_output,obs,ovar_name)
-
-        interpolated_obs.to_netcdf(f'{output_path}/{ovar_name}_{model}_OBSERVED_{expocode}.nc')
+        interpolated_obs = gridder(model_output,obs,ovar_name)
+        
+        if write:
+            interpolated_obs.to_netcdf(f'{output_path}/{ovar_name}_{model}_OBSERVED_{expocode}.nc')
     
     return interpolated_obs
 
