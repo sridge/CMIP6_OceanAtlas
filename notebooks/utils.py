@@ -5,11 +5,11 @@ import cartopy as cart
 import matplotlib.pylab as plt
 from matplotlib import cm
 import datetime
-import cmocean
 import numpy as np
 import dateutil
 import intake
 import dask
+import cmocean
 
 #==============================================================
 #
@@ -113,7 +113,7 @@ def model_to_glodap(ovar_name=None,
         
     """
 
-    # Get CMIP6 output from intake_esm
+    # Get CMIP6 output from intake-esm
     col = intake.open_esm_datastore(catalog_path)
     cat = col.search(experiment_id='historical',
                      table_id='Omon',
@@ -128,7 +128,7 @@ def model_to_glodap(ovar_name=None,
     
     # we need to know the intitute that ran the model to get the correct xarray dataset
     model_institute_df = cat.df.drop_duplicates(subset='source_id')[['source_id','institution_id']]
-    institute = model_institute_df.institution_id[model_institute_df.source_id==model].values[0]
+    institute = model_institute_df.institution_id[model_institute_df.source_id==model].iloc[0]
     
     # get the xarray dataset for the corresponding model
     ds = dset_dict[f'CMIP.{institute}.{model}.historical.Omon.gn']
@@ -251,7 +251,7 @@ def model_to_glodap(ovar_name=None,
 
 def model_to_line(ovar_name=None,
                 model=None,
-                cruise_line=None,
+                cruise_id=None,
                 write = False,
                 catalog_path='../catalogs/pangeo-cmip6.json',
                 qc_path='../qc',
@@ -269,7 +269,7 @@ def model_to_line(ovar_name=None,
     Args:
         ovar_name: ocean variable name
         model: name of CMIP6 model
-        cruise_line: name of WOCE/GO-SHIP section
+        cruise_id: GLODAP id of WOCE/GO-SHIP section
         write: would you like to save section to disk?
         catalog_path: path to catalog used by intake-esm
         qc_path: location of qc'd model sections
@@ -293,13 +293,12 @@ def model_to_line(ovar_name=None,
     df['dates'] = dates
     
 
-    # Glodap expo codes
+    # Filtered GLODAP expo codes
     expc = pd.read_csv(f'{qc_path}/FILTERED_GLODAP_EXPOCODE.csv')
 
     # rename df to coords
-    cruise_x = df[df.cruise.isin( expc['ID'][expc.LINE.str.contains(cruise_line)] )]
+    cruise_x = df[df.cruise.isin( expc['ID'][expc['ID'] == cruise_id])]
 
-    # need to change the Timedelta each day for some reason
     section_dates = [dateutil.parser.parse(date) for date in cruise_x.dates]
 
     section_dates = xr.DataArray(section_dates,dims='station')
@@ -308,7 +307,7 @@ def model_to_line(ovar_name=None,
     stations = xr.DataArray(stations,dims='station')
 
     section = sampled_var.sel(all_stations = stations, time=section_dates)
-    section.attrs['expocode'] = expc['EXPOCODE'][expc.LINE.str.contains(cruise_line)].values[0]
+    section.attrs['expocode'] = expc['EXPOCODE'][expc['ID'] == cruise_id].iloc[0]
     
     if write:
         section.to_netcdf(f'{output_path}/{ovar_name}_{model}_tem_{section.expocode}.nc')
@@ -358,8 +357,12 @@ def gridder(model,obs,ovar_name):
 
     stations_model,depth_model = np.meshgrid(stations_model,depth_model)
 
-    interpolated_obs = scint.griddata((stations_obs, depth_obs/scale_factor),ovar_obs,
-                              (stations_model, depth_model/scale_factor),
+#     interpolated_obs = scint.griddata((stations_obs, depth_obs/scale_factor),ovar_obs,
+#                               (stations_model, depth_model/scale_factor),
+#                               method='linear')
+
+    interpolated_obs = scint.griddata((stations_obs, depth_obs/10),ovar_obs,
+                              (stations_model, depth_model/10),
                               method='linear')
 
     interpolated_obs = xr.DataArray(interpolated_obs,dims = model.dims, coords = model.coords,attrs=model[ovar_name].attrs)
@@ -388,7 +391,7 @@ def glodap_to_model(cruise_id,
 
     Args:
         model: str, model name
-        glodap: pandas DataFrame, GLODAP dataset, -9999 replaced with NaNs
+        glodap: pandas DataFrame, GLODAP dataset
         coords: pandas DataFrame, quality controlled coordinates of sections 
         ovar_name: str, ocean variable name
         write: would you like to save section to disk?
@@ -405,12 +408,12 @@ def glodap_to_model(cruise_id,
                           'cfc11':'cfc11',
                           'sf6':'sf6',
                           'dissic':'tco2',
-                          'no3':'no3',
-                          'po4':'po4',
+                          'no3':'nitrate',
+                          'po4':'phosphate',
                           'talk':'talk',
                          }
     
-    expocode=expc[expc.ID==cruise_id].EXPOCODE.values[0]
+    expocode=expc[expc.ID==cruise_id].EXPOCODE.iloc[0]
     section_obs = glodap[glodap.cruise==cruise_id]
     station_obs = coords[coords.cruise==cruise_id]['station'] # get the station numbers for this particular cruise
     
@@ -435,7 +438,7 @@ def glodap_to_model(cruise_id,
         if write:
             interpolated_obs.to_netcdf(f'{output_path}/{ovar_name}_{model}_OBSERVED_{expocode}.nc')
     
-    return interpolated_obs
+        return interpolated_obs
 
 #==============================================================
 #
@@ -723,3 +726,52 @@ def plot_section(section,  cprops= {'thetao':(1,15,cmocean.cm.thermal,12,100,1e3
     cbar.outline.set_linewidth(0.5)
     
     return fig,ax1,ax1
+
+#==============================================================
+#
+# taylor diagram plotter
+#
+#==============================================================
+
+def plot_taylor_diagram(samples,ref_std = 1,ref_color = 'r',ref_label = 'Reference'):
+
+
+    #===============================
+    # Generate Taylor Diagram
+    #===============================
+    fig = plt.figure(dpi=300)
+
+    # generate Taylor diagram object 
+    dia = TaylorDiagram(refstd=ref_std, label=ref_label, extend=False, fig=fig)
+
+    # mark reference point as a red star
+    dia.samplePoints[0].set_color(ref_color)  
+
+    # add models to Taylor diagram
+    for i, (stddev, corrcoef, name, col) in enumerate(samples):
+        dia.add_sample(stddev, corrcoef,
+                       marker='o', ms=10, ls='',
+                       mfc=col, mec='k',
+                       label=name)
+
+    #===============================
+    # RMSE contours 
+    # Levels : number RMSE lines 
+    # color  : color of contours gray
+    #===============================
+    # Add RMS contours, and label them
+    contours = dia.add_contours(levels=3, colors='0.5') 
+
+    # add labelto RMSE contours 
+    dia.ax.clabel(contours, inline=1, fontsize=10, fmt='%.0f')
+
+    # Add grid lines 
+    dia.add_grid()                              
+
+    # Put ticks outward
+    dia._ax.axis[:].major_ticks.set_tick_out(True)  
+
+    # Add a figure legend and title
+    fig.legend(dia.samplePoints,
+               [ p.get_label() for p in dia.samplePoints ],
+               numpoints=1, prop=dict(size='small'), loc='upper right')
