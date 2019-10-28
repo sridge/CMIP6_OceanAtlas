@@ -1,7 +1,7 @@
 # CMIP6 Ocean Atlas
 
 ## Quick Start
-1. login to [ocean.pangeo.io](https://ocean.pangeo.io) with ORCID
+1. Login to [ocean.pangeo.io](https://ocean.pangeo.io) with your ORCID. Open to anyone with an ORCID (!)
 2. Clone this repository:\
 ```git clone https://github.com/sridge/CMIP6_OceanAtlas.git```
 3. ```cd CMIP6_OceanAtlas/```
