@@ -1,3 +1,7 @@
 *.nc
 GLODAPv2.2019_WOCE_GOSHIP.csv 
-GLODAPv2.2019_Merged_Master_File.csv  
+GLODAPv2.2019_Merged_Master_File.csv 
+notebooks/dask-worker-space/
+.nfs0000000003f809d40000009c
+notebooks/.ipynb_checkpoints/
+notebooks/*Copy?.ipynb 
